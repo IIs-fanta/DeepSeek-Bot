@@ -475,6 +475,22 @@ const ZH = {
   "Couldn't post in the group": '没能在群里发言',
   Read: '已读取',
 
+  // Tool rows and queued-message events
+  'Read file': '读取文件',
+  'Read page': '读取网页',
+  'Read image': '读取图片',
+  'Run commands': '运行命令',
+  Write: '写入',
+  Code: '代码',
+  'Tool call': '工具调用',
+  Inspect: '查看',
+  'Updating a queued message for {name}': '正在改发给 {name} 的排队消息',
+  'Updating a queued message': '正在修改排队消息',
+  'Updated a queued message for': '已更新发给',
+  'Canceled a queued message for': '已取消发给',
+  "Couldn't change the queued message for {name}": '没能修改发给 {name} 的排队消息',
+  '{name} hit a model error ({reason}); the group is waking it again': '{name} 的模型调用出错（{reason}），群聊正在重新唤醒它',
+
   // Questions
   'Your own answer': '你自己的回答',
   'Type your own answer': '输入你自己的回答',

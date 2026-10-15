@@ -15,6 +15,14 @@ DeepSeek Bot (DS Bot) is a bot plugin for [DeepSeek Harness](https://github.com/
 
 ![Say one sentence to Chief, and it sets up the bots and the group chat](docs/images/team.png)
 
+## What's new
+
+Recently added, not yet in a release:
+
+- **A group chat wakes a member that drops.** When a member's model call fails on something that usually clears on its own — a 429 rate limit, a dropped connection, a provider hiccup — its round no longer gives up on the first failure: it waits out a short backoff and wakes the member again, up to two times, and shows what is happening while it does. A member that failed after its round moved on is woken to pick its work back up the same way, before any failure is posted to the group.
+- **Queued tasks can be changed in place.** When a Bot queues several tasks for another Bot and the direction changes, it no longer has to send a correction that queues behind them: `edit_queued_message` lists, replaces or cancels the messages it sent that are still waiting unread in the other Bot's inbox. A replaced task keeps its place in the queue, its reply still comes back to the sender, and the change survives a restart.
+- **Bot chats show the whole turn.** Every step's thinking shows where it happens — live while it streams, as a fold that previews the latest line — and every ordinary tool call (shell, files, searches, the web, MCP tools…) draws as a row with its input and output behind the fold, close to DSH's own chat. Team actions keep their event lines, and Bot-to-Bot turns stay hidden.
+
 ## Install
 
 First install DSH and set up at least one model in it. DS Bot uses the models from DSH.
@@ -25,7 +33,7 @@ First install DSH and set up at least one model in it. DS Bot uses the models fr
 2. In **Package name or address**, enter `ds-bot`. In mainland China, set **Registry** to **Mainland China mirror**.
 3. Select **Install**, then **Enable now**. If DSH says the change takes effect at the next start, quit DSH completely and open it again.
 
-If npm is not reachable, in step 2 you can also enter the full path of `ds-bot-0.1.6.tgz` downloaded from [Releases](https://github.com/Fei2411/DeepSeek-Bot/releases), or `github:Fei2411/DeepSeek-Bot#v0.1.6&path:/ds-bot` (needs Git).
+If npm is not reachable, in step 2 you can also enter the full path of `ds-bot-0.1.5.tgz` downloaded from [Releases](https://github.com/Fei2411/DeepSeek-Bot/releases), or `github:Fei2411/DeepSeek-Bot#v0.1.5&path:/ds-bot` (needs Git).
 
 **DSH Web (Windows, macOS, Linux)**
 

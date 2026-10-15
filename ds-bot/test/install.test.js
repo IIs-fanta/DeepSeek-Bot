@@ -44,6 +44,7 @@ test('apply registers listeners, tools, and effects in a fixed order', (t) => {
     'on agent/pre-step (prepend)',
     'tool list_bots',
     'tool message_bot',
+    'tool edit_queued_message',
     'tool stop_bot',
     'tool create_bot',
     'tool update_bot',

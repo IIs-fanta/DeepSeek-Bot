@@ -17,11 +17,11 @@
 import { randomUUID } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { ROOM_LATE_ROUNDS, ROOM_REPLY_TIMEOUT_MS, ROOM_STEP_GAP_MS, ROOM_WORK_GRACE_MS, SOURCE_KIND, TEAM_TOOLS } from './constants.js'
+import { ROOM_LATE_RETRIES, ROOM_LATE_ROUNDS, ROOM_REPLY_TIMEOUT_MS, ROOM_STEP_GAP_MS, ROOM_TURN_RETRIES, ROOM_TURN_RETRY_DELAYS, ROOM_WORK_GRACE_MS, SOURCE_KIND, TEAM_TOOLS } from './constants.js'
 import { escapeRegExp, splitRef, textOf } from './text.js'
 import { mentionSpans } from '../shared/mentions.js'
 import { GROUP_REF, output } from './tools.js'
-import { failureLine } from './turns.js'
+import { failureLine, isTransientFailure } from './turns.js'
 
 const ROOM_LOG_MAX = 60
 const ROOM_FIRST_LOOK = 12
@@ -87,6 +87,18 @@ export const referenceNote = references => (references?.length
 
 const ROOM_REPLY = 'Reply with your message for the group, no name prefix: in a discussion, one or two short messages. When you are asked to do something, do it now with your tools. The group does not wait for you and sees what you write while you work: say what you will do, write again only when something matters, and end with the result, never a promise to do it later. Reply [PASS] to stay silent when you have nothing new to add or the message is for someone else.'
 const ROOM_CALLS = 'Writing "@Name" calls that member next, to answer or to do what you ask; when it finishes work you gave it, you answer its result. To only mention a member, write its name without "@".'
+
+// What a member reads when the round wakes it after its model call failed: the turn
+// it lost is still in its history, so the nudge only says to go on and answer.
+const roomRetryText = failure => `Your model call failed (${failureLine(failure)}), so your last turn in this group ended before you answered. Nothing you did is lost, and the message you are answering is still in your context above. Check what you already did before repeating any of it, then carry your turn through now and end with your message for the group.`
+
+// A wait that ends early when the round is stopped.
+const sleep = (ms, signal) => new Promise((resolve) => {
+  if (signal?.aborted || ms <= 0) return resolve()
+  const onAbort = () => { clearTimeout(timer); resolve() }
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve() }, ms)
+  signal?.addEventListener('abort', onAbort, { once: true })
+})
 
 const slotLabel = (slot) => {
   if (slot.status === 'speaking') return `${slot.name} (you, now)`
@@ -218,7 +230,7 @@ export function install(rt) {
         clearTimeout(timer)
         timer = setTimeout(() => finish({ missed: true }), ROOM_REPLY_TIMEOUT_MS)
       }
-      const work = () => { grace ??= setTimeout(() => finish({ working: true }), ROOM_WORK_GRACE_MS) }
+      const work = () => { grace ??= setTimeout(() => finish({ working: true }), rt.roomWorkGraceMs ?? ROOM_WORK_GRACE_MS) }
       const say = (raw) => {
         const step = stripOwnName(member.name, raw)
         if (isPass(step)) return
@@ -358,7 +370,20 @@ export function install(rt) {
       round.shown?.push(member.id)
       const text = session.brief === undefined ? prompt : `${session.brief}\n\n${prompt}`
       const said = []
-      const reply = await roomTurn(room, member, session.id, text, slot.note ?? 'your turn', signal, round, slot.by, said)
+      let reply = await roomTurn(room, member, session.id, text, slot.note ?? 'your turn', signal, round, slot.by, said)
+      // A transient model failure (a 429, a dropped connection) does not lose the
+      // member its place: the round waits out a backoff and wakes the member again,
+      // bounded, before the group hears that it could not answer. The delays live on
+      // `rt` so a test runs them without wall-clock waits.
+      const delays = rt.roomRetryDelays ?? ROOM_TURN_RETRY_DELAYS
+      for (let attempt = 0; reply?.failure !== undefined && isTransientFailure(reply.failure)
+        && attempt < Math.min(ROOM_TURN_RETRIES, delays.length) && !signal.aborted; attempt += 1) {
+        const { code, status } = reply.failure
+        round.replies.push({ kind: 'retrying', botId: member.id, name: member.name, color: member.color, code, ...(status ? { status } : {}), attempt: attempt + 1, time: Date.now() })
+        await sleep(delays[attempt] ?? 0, signal)
+        if (signal.aborted) break
+        reply = await roomTurn(room, member, session.id, roomRetryText(reply.failure), 'your model call failed; pick your turn back up', signal, round, slot.by, said)
+      }
       round.speaking = null
       const final = typeof reply === 'string' && !isPass(reply) ? reply : undefined
       if (reply?.failure !== undefined) {
@@ -688,12 +713,35 @@ export function install(rt) {
   rt.stopMemberWork = stopMemberWork
 
   // The round said such a member posts when done; a failed model call is how it ended.
-  // Nobody answers it.
+  // A transient failure first gets the member woken to pick its work back up, bounded
+  // per group turn; only the last failure reaches the group, and nobody answers it.
+  /** @type {Map<string, number>} wake attempts by the group turn's exchange */
+  const lateRetries = new Map()
+  const LATE_RETRIES_KEPT = 200
   async function lateRoomFailure(sessionId, info, failure) {
     const owner = rt.groupOwners.get(sessionId)
     const room = rt.roomOf(owner?.roomId ?? info.roomId)
     const member = rt.botOf(owner?.botId)
     if (room === undefined || member === undefined || !room.members.includes(member.id)) return
+    const key = info.exchangeId ?? `${sessionId}:${info.hop ?? 0}`
+    const attempts = lateRetries.get(key) ?? 0
+    if (isTransientFailure(failure) && attempts < ROOM_LATE_RETRIES) {
+      lateRetries.set(key, attempts + 1)
+      if (lateRetries.size > LATE_RETRIES_KEPT) lateRetries.delete(lateRetries.keys().next().value)
+      await rt.deliver({
+        toId: member.id,
+        sessionId,
+        role: 'room',
+        roomId: room.id,
+        ...(info.exchangeId ? { exchangeId: info.exchangeId } : {}),
+        hop: info.hop ?? 0,
+        ...(info.askedBy ? { askedBy: info.askedBy } : {}),
+        note: 'your model call failed; pick your work back up',
+        text: roomRetryText(failure),
+      }).catch(error => rt.warn('ds-bot: waking %s after a failed group turn failed: %s', member.name, error))
+      return
+    }
+    lateRetries.delete(key)
     const { code, status, message } = failure
     await postToRoom(room, member, `Could not finish: its model call failed (${failureLine(failure)}).`, {
       late: true, quiet: true, failed: { code, ...(status ? { status } : {}), message },

@@ -786,9 +786,30 @@ body[data-ds-dark-theme] .bt-theme-chip i{background:var(--da)}
 
 export const CONVERSATION_CSS = `
 .bt-think{font-size:13px;line-height:18px;color:var(--bt-ink-2);margin:2px 0 4px;max-width:min(560px,78%)}
-.bt-think summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px}
+.bt-think summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:6px;min-width:0}
 .bt-think summary::-webkit-details-marker{display:none}
-.bt-think-text{white-space:pre-wrap;margin-top:6px;padding-left:10px;border-left:2px solid var(--bt-line-2)}
+.bt-think-title{flex:none}
+.bt-think-sep{flex:none;color:var(--bt-ink-3)}
+.bt-think-sum{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--bt-ink-3)}
+.bt-think-text{margin-top:6px;padding-left:10px;border-left:2px solid var(--bt-line-2);min-width:0}
+/* Ordinary tool calls: DSH's own row look, inside the Bot chat's widths. */
+.bt-call{display:flex;flex-direction:column;margin:2px 0;max-width:min(640px,86%);min-width:0}
+.bt-call-collapsed{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.bt-call-sep{flex:none;color:var(--bt-ink-3)}
+.bt-call-sum{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--bt-ink-3)}
+.bt-call-sum[data-error]{color:#e02135}
+.bt-call-file{border:0;background:none;color:var(--bt-ink-3);font:inherit;cursor:pointer;padding:0;text-align:left;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bt-call-file:hover{color:var(--bt-ink-2);text-decoration:underline}
+.bt-call-sub{border-left:.5px solid var(--bt-line-2);flex-direction:column;gap:2px;margin:2px 0 2px 11px;padding-left:10px;display:flex}
+.bt-call-body{display:flex;flex-direction:column;gap:8px;padding:6px 0 8px 22px;min-width:0}
+.bt-call-io{display:flex;flex-direction:column;gap:4px;min-width:0}
+.bt-call-io-label{font-size:11px;line-height:16px;font-weight:600;color:var(--bt-ink-3)}
+.bt-call-pre{margin:0;padding:8px 10px;border-radius:8px;background:var(--bt-bubble);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:17px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;color:var(--bt-ink)}
+.bt-call-pre[data-error]{color:#e02135}
+.bt-call-code{min-width:0}
+.bt-call-inspect{align-self:flex-start;display:inline-flex;align-items:center;gap:4px;border:.5px solid var(--bt-line-2);background:none;border-radius:999px;padding:2px 8px;font:inherit;font-size:12px;line-height:18px;color:var(--bt-ink-2);cursor:pointer}
+.bt-call-inspect:hover{background:var(--bt-hover)}
+.bt-call-inspect svg{width:13px;height:13px}
 .bt-event{display:flex;justify-content:center;align-items:center;gap:2px;min-height:24px;margin:2px 0;font-size:12px;line-height:16px;color:var(--bt-ink-2);flex-wrap:wrap}
 .bt-event>span{padding:0 2px}
 .bt-event button{border:0;background:none;color:inherit;font:inherit;display:inline-flex;align-items:center;gap:4px;cursor:pointer;height:24px;padding:4px 6px 4px 4px;border-radius:999px;box-sizing:border-box;transition:background-color .12s ease}

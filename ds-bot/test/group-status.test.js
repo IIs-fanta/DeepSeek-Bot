@@ -237,14 +237,16 @@ test('a member that fails after the round moved on shows the failure in the grou
   const [approval] = (await host.call('state', {})).value.work.approvals
   await host.call('approval-answer', { id: approval.id, choice: 'allow' })
   await outcome
-  host.emit('gb', 'turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'RATE_LIMIT', status: 429, message: 'Too many requests' } } })
+  // A failure that will not clear on its own posts at once; a transient one is first
+  // retried by the group (see group-retry.test.js).
+  host.emit('gb', 'turn/end', { turn: 1, reason: { kind: 'error', error: { code: 'QUOTA', status: 402, message: 'Out of quota' } } })
   await settle(() => host.agentOf('r1').calls.length === 1)
   const post = host.agentOf('r1').calls[0]
-  assert.deepEqual([post.source.late, post.source.quiet, post.source.failed], [true, true, { code: 'RATE_LIMIT', status: 429, message: 'Too many requests' }])
+  assert.deepEqual([post.source.late, post.source.quiet, post.source.failed], [true, true, { code: 'QUOTA', status: 402, message: 'Out of quota' }])
 
   host.emit('r1', 'user/message', { content: post.content, source: post.source })
   const round = JSON.parse(await host.tool('group_relay', {}, 'r1', { callId: 'c2', signal: new AbortController().signal }))
-  assert.deepEqual(round.replies.map(reply => [reply.kind, reply.name, reply.code, reply.status]), [['failed', 'Writer', 'RATE_LIMIT', 429]])
+  assert.deepEqual(round.replies.map(reply => [reply.kind, reply.name, reply.code, reply.status]), [['failed', 'Writer', 'QUOTA', 402]])
   assert.deepEqual(round.failed, ['Writer'])
   assert.equal(host.agentOf('gb').calls.length, 1)
 })

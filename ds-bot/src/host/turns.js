@@ -21,6 +21,16 @@ export function turnFailure(error) {
 
 export const failureLine = failure => `${failure.code}${failure.status ? ` ${failure.status}` : ''}${failure.message ? `: ${failure.message.slice(0, 200)}` : ''}`
 
+// A failure that usually clears on its own: the provider asked for a slower pace, its
+// service hiccuped, or the connection dropped. DSH's own retry rides the quick ones
+// out; what reaches ds-bot has outlasted that, so a group backs off on its own clock
+// and wakes the member again (groups.js) instead of giving up on the first failure.
+const TRANSIENT_CODES = new Set(['RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'EMPTY_RESPONSE'])
+export const isTransientFailure = failure => failure !== undefined && failure !== null
+  && (TRANSIENT_CODES.has(failure.code)
+    || failure.status === 429 || failure.status === 408
+    || (typeof failure.status === 'number' && failure.status >= 500 && failure.status <= 599))
+
 // A group's own Session never reaches a model, so the snapshot DSH prepared there
 // rides with the user's queued message to the members who answer it.
 export function attachReference(queued, source, text) {
@@ -116,7 +126,7 @@ export function install(rt) {
   /** @type {Record<string, string>} */
   let activity = {}
   const activityOf = (tool) => {
-    if (/^(message_bot|stop_bot|create_bot|update_bot|create_group|update_group|delete_group|post_to_group)$/.test(tool)) return 'sending'
+    if (/^(message_bot|edit_queued_message|stop_bot|create_bot|update_bot|create_group|update_group|delete_group|post_to_group)$/.test(tool)) return 'sending'
     if (tool === 'group_relay') return 'orbit'
     if (/search|fetch|browse|browser|read|grep|glob|list/i.test(tool)) return 'searching'
     return 'working'
@@ -485,11 +495,16 @@ export function install(rt) {
           const back = rt.roomOf(source.senderRoomId)?.sessions?.[source.senderSessionId]
           if (failure !== undefined) {
             // The sender was told a reply comes later; without this it would wait forever.
+            // A transient failure (a 429, a dropped connection) is worth one later retry;
+            // anything else will fail the same way again and belongs to the user.
+            const again = isTransientFailure(failure)
+              ? 'This kind of failure usually clears on its own: send the message again later, once, if the answer still matters.'
+              : 'Do not retry right away.'
             void rt.deliver({
               fromId: rt.selfOf(id),
               toId: source.senderSessionId,
               ...(back ? { sessionId: back } : {}),
-              text: `${name} could not answer your message: its model call failed (${failureLine(failure)}). Tell the user if it matters; do not retry right away.`,
+              text: `${name} could not answer your message: its model call failed (${failureLine(failure)}). ${again} Tell the user if it matters.`,
               role: 'reply',
               hop: source.hop ?? 0,
               replyTo: source.exchangeId,

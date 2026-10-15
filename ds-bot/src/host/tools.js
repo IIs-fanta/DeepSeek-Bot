@@ -1,9 +1,10 @@
 // Team tools: the roster, bot-to-bot messages, group chat settings and posts, and the
 // question card. Group rounds and reading chats are in groups.js.
 import { randomUUID } from 'node:crypto'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { COLORS, EXTRA_COLORS, MAX_HOPS, MAX_UNATTENDED_MESSAGES, MAX_UNREAD_REQUESTS, ROOM_BOT_ROUNDS, ROOM_MODES, SOURCE_KIND } from './constants.js'
-import { unquote } from './text.js'
+import { normalize, textOf, unquote } from './text.js'
 
 export const output = { schema: { type: 'string' }, render: (_args, value) => [{ type: 'text', text: String(value) }] }
 export const GROUP_REF = { type: 'string', required: true, description: 'Exact group chat name from list_bots' }
@@ -102,7 +103,7 @@ export function install(rt) {
 
   ctx.tools.register(defineTool({
     name: 'message_bot',
-    description: 'Send a message to another Bot on the team. If that Bot is working, it reads your message at its next step and can change course, then answers once that work is done; if it is idle, it starts on it right away. Its reply arrives later as a new message to you; with reply_to "user" it answers the user in its own chat instead.',
+    description: 'Send a message to another Bot on the team. If that Bot is working, it reads your message at its next step and can change course, then answers once that work is done; if it is idle, it starts on it right away. Its reply arrives later as a new message to you; with reply_to "user" it answers the user in its own chat instead. A message that is still waiting unread in the other Bot\'s inbox can be replaced or canceled with edit_queued_message.',
     parameters: {
       to: { type: 'string', required: true, description: 'Exact Bot name from list_bots' },
       message: { type: 'string', required: true, description: 'Self-contained message; the other Bot cannot see this conversation' },
@@ -143,7 +144,7 @@ export function install(rt) {
         : working && steer
           ? `Delivered to ${target.name} while it is working: it reads your message at its next step and answers once that work is done. Its reply will arrive later as a new message; do not wait for it.`
           : working
-            ? `Queued for ${target.name}: it reads your message after its current work. Its reply will arrive later as a new message; do not wait for it.`
+            ? `Queued for ${target.name}: it reads your message after its current work. Its reply will arrive later as a new message; do not wait for it. If this task changes before ${target.name} reads it, edit_queued_message replaces or cancels it in place instead of queueing a correction behind it.`
             : `Delivered to ${target.name}. Its reply will arrive later as a new message; do not wait for it.`
       // "Delivered" only means it is in the inbox; say so when it may sit there a while.
       const notes = [
@@ -156,6 +157,97 @@ export function install(rt) {
       if (groups.length === 0) return status
       const stop = rt.isMain(sender.id) ? ' If it must not go on there, use stop_bot.' : ''
       return `${status} ${target.name} is also working in ${groups.map(whereOf).join(' and ')}; your message does not reach that work.${stop}`
+    },
+  }))
+
+  // The messages one Bot has waiting unread in another's inbox: what its own edit or
+  // cancel may still change. A steered message waits at the receiver's next step, a
+  // queued one until its current work is done; both sit in the DSH agent's inbox
+  // until a turn claims them, and only until then.
+  const queuedRequests = (agent, senderId) => ['nextStep', 'nextTurn'].flatMap(list => (agent.inbox?.[list] ?? [])
+    .filter(message => message.source?.kind === SOURCE_KIND && message.source.role === 'request' && message.source.senderSessionId === senderId)
+    .map(message => ({ message, list })))
+  // The text a receiver reads after the delivery header line.
+  const queuedText = message => textOf(message.content).replace(/^\[[^\]\n]*\]\n?/, '')
+  const queuedLine = (entry, index) => {
+    const where = entry.list === 'nextStep' ? 'cuts in at its next step' : 'waits for its current work'
+    return `${index + 1}. (${where}) "${queuedText(entry.message).split('\n')[0].slice(0, 80)}"`
+  }
+
+  ctx.tools.register(defineTool({
+    name: 'edit_queued_message',
+    description: 'Replace or cancel a message you sent another Bot that is still waiting unread in its inbox — when the task changed direction after you queued it, change that queued task in place instead of sending a correction that queues behind it. Pass only to to list what of yours is waiting there.',
+    parameters: {
+      to: { type: 'string', required: true, description: 'Exact Bot name from list_bots' },
+      match: { type: 'string', description: 'Words from the waiting message that pick it out; needed unless only one of yours is waiting' },
+      message: { type: 'string', description: 'The full replacement text, self-contained like the original. The message keeps its place in the queue and the receiver reads this instead' },
+      cancel: { type: 'boolean', description: 'Remove the message instead of replacing it; the receiver never reads it' },
+    },
+    output,
+    async execute(args, exec) {
+      await rt.load()
+      const sender = callerBot(exec)
+      if (sender === undefined) return 'Only Bots on the team can use edit_queued_message.'
+      const target = rt.findBot(args.to)
+      if (target === undefined) return `No Bot named ${args.to}. Team: ${Object.values(state.bots).map(bot => bot.name).join(', ')}`
+      if (target.id === sender.id) return 'You cannot change messages you sent yourself.'
+      const chat = rt.chatOf(target.id)
+      let agent
+      try {
+        agent = await rt.resolveAgent(chat)
+      } catch (error) {
+        return `Could not reach ${target.name}: ${error.message}`
+      }
+      const pending = queuedRequests(agent, sender.id)
+      const listing = () => `Your messages waiting unread in ${target.name}'s inbox (oldest first):\n${pending.map(queuedLine).join('\n')}`
+      const readAlready = `Nothing of yours is waiting unread in ${target.name}'s inbox${pending.length === 0 ? '' : ' that matches'}. A message it has already read cannot be changed; to redirect work it is doing now, use message_bot with when "now".`
+      const newText = typeof args.message === 'string' ? args.message.trim() : ''
+      if (newText === '' && args.cancel !== true) {
+        return pending.length === 0
+          ? `Nothing of yours is waiting unread in ${target.name}'s inbox. A message it has already read cannot be changed; to redirect work it is doing now, use message_bot with when "now".`
+          : `${listing()}\nPass one as match with message to replace it in place, or with cancel: true to remove it.`
+      }
+      if (newText !== '' && args.cancel === true) return 'Pass either message to replace the waiting message, or cancel to remove it — not both.'
+      const match = normalize(args.match)
+      const candidates = match === '' ? pending : pending.filter(entry => normalize(queuedText(entry.message)).includes(match))
+      if (candidates.length === 0) return `${readAlready}\n${pending.length === 0 ? '' : listing()}`.trim()
+      if (candidates.length > 1 && match === '') return `Several of your messages are waiting in ${target.name}'s inbox. Pass match to pick one:\n${pending.map(queuedLine).join('\n')}`
+      if (candidates.length > 1) return `Several of your messages waiting in ${target.name}'s inbox contain "${String(args.match).trim()}". Pass more of the text to pick one:\n${candidates.map((entry, index) => queuedLine(entry, index)).join('\n')}`
+      const picked = candidates[0].message
+      const exchangeId = picked.source?.exchangeId
+      if (args.cancel === true) {
+        // The inbox removal fires agent/inbox/discarded, which drops its resume note.
+        if (!agent.inbox.remove(picked.id)) return readAlready
+        const at = state.exchanges.findIndex(entry => entry.id === exchangeId)
+        if (at !== -1) state.exchanges.splice(at, 1)
+        await ctx.sessions.flush(agent.session)
+        await rt.save()
+        return `Canceled your message in ${target.name}'s queue; it will not read it. Nothing was sent in its place.`
+      }
+      // The replacement keeps the original's source, so the reply still routes to this
+      // sender under the same exchange, and the receiver's turn logic sees no change.
+      const replacement = createUserMessage({
+        content: [{ type: 'text', text: `[Message from ${sender.name} · updated before you read it]\n${newText}` }],
+        source: picked.source,
+      })
+      if (!agent.inbox.replace(picked.id, replacement)) return readAlready
+      const exchange = state.exchanges.find(entry => entry.id === exchangeId)
+      if (exchange !== undefined) exchange.text = newText
+      // The rewrite dropped the resume note of the original; note what a restart must
+      // pick up now, so the receiver reads the new text even across a restart.
+      rt.noteDelivery?.({
+        fromId: sender.id,
+        toId: target.id,
+        text: newText,
+        role: 'request',
+        hop: picked.source?.hop ?? 0,
+        exchangeId,
+        ...(picked.source?.audience ? { audience: picked.source.audience } : {}),
+        ...(picked.source?.senderRoomId ? { fromRoomId: picked.source.senderRoomId } : {}),
+      })
+      await ctx.sessions.flush(agent.session)
+      await rt.save()
+      return `Replaced your message in ${target.name}'s queue, in the same place: it reads the new text when its turn comes. No extra message was sent.`
     },
   }))
 

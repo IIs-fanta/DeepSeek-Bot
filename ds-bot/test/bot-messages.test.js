@@ -127,7 +127,7 @@ test('message_bot when "queue" waits for the current work, and reply_to "user" a
 
   emit('b', 'turn/start', { turn: 1 })
   const queued = await tool('message_bot', { to: 'Writer', message: 'later', when: 'queue' }, 'a')
-  assert.equal(queued, 'Queued for Writer: it reads your message after its current work. Its reply will arrive later as a new message; do not wait for it.')
+  assert.equal(queued, 'Queued for Writer: it reads your message after its current work. Its reply will arrive later as a new message; do not wait for it. If this task changes before Writer reads it, edit_queued_message replaces or cancels it in place instead of queueing a correction behind it.')
   assert.deepEqual(agents.get('b').calls.map(([kind]) => kind), ['followup'])
 
   const toUser = await tool('message_bot', { to: 'Writer', message: 'tell them', reply_to: 'user', when: 'now' }, 'a')

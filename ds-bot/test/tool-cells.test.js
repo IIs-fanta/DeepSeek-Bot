@@ -32,6 +32,13 @@ const react = {
 }
 const timers = new Set()
 const module = { exports: {} }
+// The disclosure row projects its header parts into children, so a render's text
+// carries the row's title and summary; the shimmer passes its text through.
+const primitives = {
+  MarkdownText: ({ text }) => text,
+  TextShimmer: ({ children }) => children,
+  DisclosureRow: ({ title, collapsedContent, children }) => h('div', { className: 'disclosure' }, title, collapsedContent, children),
+}
 runInNewContext(outputFiles[0].text, {
   module, exports: module.exports,
   document: { hidden: false },
@@ -40,7 +47,7 @@ runInNewContext(outputFiles[0].text, {
   require: (name) => {
     if (name === 'react') return react
     if (name === 'react-dom') return { createPortal: node => node }
-    if (name === '@deepseek-ai/dsh-client-ui-primitives') return { MarkdownText: ({ text }) => text }
+    if (name === '@deepseek-ai/dsh-client-ui-primitives') return new Proxy(primitives, { get: (target, key) => target[key] ?? (() => null) })
     throw new Error(`Unexpected platform module ${name}`)
   },
 })
@@ -126,15 +133,17 @@ const BRANCHES = [
 ]
 const rosterFor = callId => team({ questions: { chief: question(callId) }, secretRequests: { chief: [request(callId)] } })
 
-test('every call ToolCell draws shows the same nested in a PTC program as on its own', () => {
+test('every call ToolCell draws shows its own line nested in a PTC program as on its own', () => {
   assert.equal(BRANCHES.length, 15)
   for (const [name, options, expected] of BRANCHES) {
     const native = shown(call(name, 'direct', options), { roster: rosterFor('direct') })
     assert.match(native, expected, `${name} on its own`)
+    // Under a program the line keeps its own text, inside the program's code row.
     const nested = shown(program([call(name, 'program:ptc:1', options)]), { roster: rosterFor('program:ptc:1') })
-    assert.equal(nested, native, `${name} under run_code`)
+    assert.match(nested, expected, `${name} under run_code`)
+    assert.match(nested, /^Code/, `${name} under run_code keeps the program's row`)
     const deep = shown(program([call('run_code', 'program:ptc:1', { subCalls: [call(name, 'program:ptc:1:ptc:1', options)] })]), { roster: rosterFor('program:ptc:1:ptc:1') })
-    assert.equal(deep, native, `${name} two programs deep`)
+    assert.match(deep, expected, `${name} two programs deep`)
   }
 })
 
@@ -169,20 +178,35 @@ test('cards and replies still show when the program\'s own call head left the lo
 test('each sub-call shows its own state, not its program\'s', () => {
   const created = call('create_bot', 'program:ptc:1', { args: { name: 'Writer' } })
   assert.match(shown(program([created], { running: true })), /Created.*Writer/)
-  assert.equal(shown(program([{ ...call('create_bot', 'program:ptc:1', { args: { name: 'Writer' }, running: true }) }])), '')
+  const running = shown(program([{ ...call('create_bot', 'program:ptc:1', { args: { name: 'Writer' }, running: true }) }]))
+  assert.doesNotMatch(running, /Created/)
+  assert.match(running, /Code/)
   const failed = call('message_bot', 'program:ptc:1', { args: { to: 'Writer' }, isError: true })
   assert.match(shown(program([failed])), /Couldn't message Writer/)
-  assert.match(shown(program([call('message_bot', 'program:ptc:1', { args: { to: 'Writer' } })], { isError: true })), /^Messaged/)
+  assert.match(shown(program([call('message_bot', 'program:ptc:1', { args: { to: 'Writer' } })], { isError: true })), /Messaged/)
   const refused = call('post_to_group', 'program:ptc:1', { content: 'No group is called "Nope".', isError: true })
   const posted = call('post_to_group', 'program:ptc:2', { content: 'Posted in "Ops".' })
   assert.match(shown(program([refused, posted])), /Couldn't post in the group.*Posted in.*Ops/)
 })
 
-test('a program with no known sub-call draws nothing, as before', () => {
-  assert.equal(ToolCell(props(program([]))), null)
-  assert.equal(ToolCell(props(program([call('bash', 'program:ptc:1'), call('read_file', 'program:ptc:2')]))), null)
-  assert.equal(ToolCell(props(call('bash', 'direct'))), null)
-  effects = []
+test('an ordinary call draws a row of its own, alone and under a program, and each call draws once', () => {
+  const bash = shown(call('bash', 'direct', { args: { description: 'List files', command: 'ls' } }))
+  assert.match(bash, /Run commands/)
+  assert.match(bash, /List files/)
+  const unknown = shown(call('mcp__seep__seep_status', 'direct', { args: {} }))
+  assert.match(unknown, /Tool call · mcp__seep__seep_status/)
+  const nested = shown(program([call('bash', 'program:ptc:1', { args: { command: 'ls' } }), call('read', 'program:ptc:2', { args: { file_path: 'notes.md' } })]))
+  assert.match(nested, /Code.*Run commands.*ls.*Read file.*notes\.md/)
+  // A repeated call id, as a loaded history can carry, still draws once.
+  const twice = shown(program([call('bash', 'program:ptc:1', { args: { command: 'ls' } }), call('bash', 'program:ptc:1', { args: { command: 'ls' } })]))
+  assert.equal(count(twice, 'Run commands'), 1)
+})
+
+test('a group Session keeps only the team lines, without the ordinary rows', () => {
+  const out = shown(program([call('group_relay', 'program:ptc:1', { content: { replies: [{ botId: 'writer', text: 'Round reply.' }] } }), call('bash', 'program:ptc:2', { args: { command: 'ls' } })]), { sessionId: 'room' })
+  assert.match(out, /Round reply\./)
+  assert.doesNotMatch(out, /Run commands/)
+  assert.doesNotMatch(out, /Code/)
 })
 
 test('a hidden Bot-to-Bot turn draws none of its sub-calls', () => {
@@ -361,7 +385,8 @@ test('PTC secret and question cards show at their sub-calls and act on their own
   assert.match(after, /Chief asked for DEMO_TOKEN.*Canceled/)
   assert.doesNotMatch(after, /Paste or type the key/)
   assert.doesNotMatch(shown(program([call('ask_user', 'call-0-1:ptc:1')]), { roster }), /Which draft\?/)
-  assert.equal(shown(program([call('ask_user', 'call-1-2:ptc:1')]), { roster: team() }), '')
+  // The card of an answered question leaves no text; only the program's own row stays.
+  assert.doesNotMatch(shown(program([call('ask_user', 'call-1-2:ptc:1')]), { roster: team() }), /Which draft\?/)
 })
 
 // #133: a DSH goal round showed its raw <goal_round> prompt as an event line.

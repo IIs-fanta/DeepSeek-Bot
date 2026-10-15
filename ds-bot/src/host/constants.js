@@ -31,6 +31,15 @@ export const MAX_EXCHANGES = 600
 export const ROOM_REPLY_TIMEOUT_MS = 240_000
 // Lines a member writes less than this apart while it works reach its group together.
 export const ROOM_STEP_GAP_MS = 30_000
+// A member whose model call failed transiently (a 429, a dropped connection) is woken
+// again by its own group: the round waits out each delay and repeats the turn, this
+// many times, before the group is told the member could not answer. DSH's own retry
+// rode out the quick ones already; these waits cover a provider that needs a minute.
+export const ROOM_TURN_RETRIES = 2
+export const ROOM_TURN_RETRY_DELAYS = [20_000, 40_000]
+// A member that failed after its round moved on (it went on working) is nudged to pick
+// its work back up this many times per group turn before the failure is posted.
+export const ROOM_LATE_RETRIES = 2
 export const SOURCE_KIND = 'bot'
 // The fixed reply that opens a fresh conversation part; it is never shown or sent on.
 export const HANDOFF_ACK = 'Noted. I have my handoff note and carry on from here.'
@@ -55,7 +64,7 @@ export const AGENT_SESSION_TITLE_MAX = 80
 // Every tool this plugin registers for Bots. `read_browser` only exists in the
 // Desktop profile, so a restriction filters this list down to registered names.
 export const TEAM_TOOLS = [
-  'list_bots', 'message_bot', 'stop_bot', 'create_bot', 'update_bot', 'list_models',
+  'list_bots', 'message_bot', 'edit_queued_message', 'stop_bot', 'create_bot', 'update_bot', 'list_models',
   'create_group', 'update_group', 'delete_group', 'post_to_group', 'ask_user',
   'request_secret', 'list_secrets', 'group_relay', 'read_own_chat',
   'read_group_chat', 'remember', 'forget', 'recall', 'read_browser',

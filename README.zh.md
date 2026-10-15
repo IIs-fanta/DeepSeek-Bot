@@ -15,6 +15,14 @@ DeepSeek Bot（简称 DS Bot）是一个基于 [DeepSeek Harness](https://github
 
 ![和 Chief 说一句话，它就把 bot 和群聊建好](docs/images/team.zh.png)
 
+## 最新更新
+
+最近新增，尚未随版本发布：
+
+- **群聊会唤醒掉线的成员。** 当某个成员的模型调用遇到通常能自行恢复的错误——429 限流、连接断开、服务商抖动——轮次不再一次失败就放弃：它会等一小段退避时间后再次唤醒该成员，最多重试两次，并在群里显示正在重试。轮到发言之后才去干活、随后失败的成员，也会先被唤醒接着做，实在不行才把失败贴进群。
+- **排队中的任务可以就地修改。** 一个 bot 给另一个 bot 排了多个任务、而方向发生变化时，不必再发一条排在其后的"更正"：`edit_queued_message` 可以列出、替换或取消它发出的、还在对方收件箱里未被读取的消息。被替换的任务保持原来的排队位置，回复仍会返回给发送者，改动也能跨重启保留。
+- **bot 对话完整展示整个回合。** 每一步的思考都会就地显示——流式输出时实时更新，折叠行预览最新一句——每个普通工具调用（shell、文件、搜索、网页、MCP 工具……）都渲染为一行，展开可看输入与输出，接近 dsh 原生对话界面。团队动作仍然是事件行，bot 之间的内部回合仍然隐藏。
+
 ## 安装
 
 先装好 dsh，并在 dsh 里配好至少一个模型。ds bot 直接使用 dsh 里的模型。
@@ -25,7 +33,7 @@ DeepSeek Bot（简称 DS Bot）是一个基于 [DeepSeek Harness](https://github
 2. **包名或地址** 填 `ds-bot`。在中国大陆，**安装源** 选 **中国大陆镜像源**。
 3. 点 **安装**，再点 **立即启用**。如果提示“下次启动生效”，完全退出 dsh 再打开。
 
-连不上 npm 时，第 2 步也可以填 [Releases](https://github.com/Fei2411/DeepSeek-Bot/releases) 里下载的 `ds-bot-0.1.6.tgz` 的完整路径，或者 `github:Fei2411/DeepSeek-Bot#v0.1.6&path:/ds-bot`（需要装 Git）。
+连不上 npm 时，第 2 步也可以填 [Releases](https://github.com/Fei2411/DeepSeek-Bot/releases) 里下载的 `ds-bot-0.1.5.tgz` 的完整路径，或者 `github:Fei2411/DeepSeek-Bot#v0.1.5&path:/ds-bot`（需要装 Git）。
 
 **dsh Web（Windows、macOS、Linux）**
 

@@ -97,13 +97,21 @@ export function install(rt) {
     }
   }
 
+  const noteDelivery = (args) => {
+    const sessionId = args.sessionId ?? rt.chatOf(args.toId)
+    // Noted before it is sent: a turn may take it up before the send returns.
+    queued = { ...queued, [sessionId]: [...(queued[sessionId] ?? []), { at: Date.now(), args }].slice(-QUEUED_MAX) }
+    persist()
+  }
+  // A message rewritten in its receiver's inbox (edit_queued_message) is noted again
+  // with its new text: the rewrite drops the old note through agent/inbox/discarded,
+  // and a restart must pick up what the receiver will actually read.
+  rt.noteDelivery = noteDelivery
+
   const deliver = rt.deliver
   rt.deliver = async (args) => {
     const noted = { ...args, exchangeId: args.exchangeId ?? randomUUID() }
-    const sessionId = noted.sessionId ?? rt.chatOf(noted.toId)
-    // Noted before it is sent: a turn may take it up before the send returns.
-    queued = { ...queued, [sessionId]: [...(queued[sessionId] ?? []), { at: Date.now(), args: noted }].slice(-QUEUED_MAX) }
-    persist()
+    noteDelivery(noted)
     try {
       return await deliver(noted)
     } catch (error) {

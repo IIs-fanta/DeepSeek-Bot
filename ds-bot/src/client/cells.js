@@ -1,6 +1,6 @@
 import { createElement as h, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { MarkdownText, TextShimmer } from '@deepseek-ai/dsh-client-ui-primitives'
 import { inkText } from './inks.js'
 import { linkMentions, mentionTarget, dayLabel, contentText, stripHeader, isHiddenTurn, isRelayContext, relaysBefore, relayPart, commRunOf, toolName, toolArgs, reminderPrompts } from './text.js'
 import { SmileIcon, ReplyIcon, DotsIcon, CheckIcon, DownloadIcon, CopyIcon, MemoryIcon } from './icons.js'
@@ -9,7 +9,8 @@ import { AnsweredCell, SettledQuestion, PendingQuestion } from './questions.js'
 import { SecretToolCell } from './secret-card.js'
 import { dateLocale, t } from './i18n.js'
 import { failureLabel } from './diagnostics.js'
-import { turnReasoning } from './turn-reasoning.js'
+import { reasoningLive, stepReasoning, thinkingPreview } from './turn-reasoning.js'
+import { BotToolRow } from './tool-rows.js'
 
 // -------------------------------------------------------------------------
 // Chat cells
@@ -100,10 +101,17 @@ function MessageTools({ text, name, sessionId, react, actions }) {
       item(t('Copy'), CopyIcon, copy), item(t('Download'), DownloadIcon, download)), document.body) : null)
 }
 
-function ThinkingRow({ text }) {
-  return h('details', { className: 'bt-think' },
-    h('summary', null, t('Thought it through')),
-    h('div', { className: 'bt-think-text' }, text))
+// One step's own thinking, as DSH's chat shows it: a fold that previews the latest
+// settled line while the thoughts stream, and the full text when opened.
+function ThinkingRow({ text, running }) {
+  const preview = thinkingPreview(text, running)
+  const shimmer = node => (typeof TextShimmer === 'function' ? h(TextShimmer, null, node) : node)
+  return h('details', { className: 'bt-think', 'data-running': running || undefined },
+    h('summary', null,
+      h('span', { className: 'bt-think-title' }, t(running ? 'Thinking…' : 'Thought it through')),
+      preview !== '' ? h('span', { className: 'bt-think-sep', 'aria-hidden': true }, '·') : null,
+      preview !== '' ? h('span', { className: 'bt-think-sum' }, shimmer(preview)) : null),
+    h('div', { className: 'bt-think-text' }, h(MarkdownText, { text, streaming: running, labels: mdLabels(), variant: 'compact' })))
 }
 
 // The files a finished turn changed or delivered, linked from inline code in its
@@ -131,7 +139,9 @@ export function AssistantCell({ node, groupPart, sessionId, openFile, fileMentio
   // A streaming reply stands in for the activity row.
   useLiveNote(actions, sessionId, `text:${node.key ?? data.seq}`, !hidden && running && texts.length > 0 ? { text: true } : null)
   if (hidden) return null
-  const reasoning = groupPart === 'response' ? '' : turnReasoning(steps, data)
+  // Every step shows its own thinking where it happened, live while it streams.
+  const reasoning = groupPart === 'response' ? '' : stepReasoning(data)
+  const thinking = running && reasoningLive(data)
   // A relay spliced mid-turn is a 'context' node, hidden from the chat flow on
   // DSH 0.2; the step that answers it shows the event line where it was read,
   // once, in the step's first cell.
@@ -150,7 +160,7 @@ export function AssistantCell({ node, groupPart, sessionId, openFile, fileMentio
         whole: true,
       })
     }),
-    reasoning ? h(ThinkingRow, { text: reasoning }) : null,
+    reasoning ? h(ThinkingRow, { text: reasoning, running: thinking }) : null,
     texts.length ? h(Bubbles, { texts, roster, selfId, actions, streaming: running, sessionId, msgKey: `${sessionId}:${data.turn}:${node.key ?? data.seq ?? ''}`, useUi, mentions }) : null)
 }
 
@@ -514,6 +524,10 @@ function toolActivity(name, arg, findBot, self) {
       const target = findBot(arg('to'))
       return { label: target ? t('Asking {name}', { name: target.name }) : t('Asking another Bot'), state: 'sending' }
     }
+    case 'edit_queued_message': {
+      const target = findBot(arg('to'))
+      return { label: target ? t('Updating a queued message for {name}', { name: target.name }) : t('Updating a queued message'), state: 'sending' }
+    }
     case 'stop_bot': {
       const target = findBot(arg('bot'))
       return { label: target ? t('Stopping {name}', { name: target.name }) : t('Stopping another Bot'), state: 'sending' }
@@ -605,6 +619,10 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
       if (reply.kind === 'missed') {
         return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event' }, t("{name} didn't answer in time", { name: bot.name }))
       }
+      if (reply.kind === 'retrying') {
+        return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event', role: 'status', title: [reply.code, reply.status].filter(Boolean).join(' · ') },
+          t('{name} hit a model error ({reason}); the group is waking it again', { name: bot.name, reason: failureLabel(reply.code, reply.text) }))
+      }
       if (reply.kind === 'resumed') {
         return h('div', { key: `${reply.botId}-${index}`, className: 'bt-event' }, t('{name} was cut off by a restart and picked its work back up', { name: bot.name }))
       }
@@ -630,9 +648,10 @@ function GroupReplies({ sessionId, callId, done, content, roster, actions, useUi
     }))
 }
 
-// The calls ToolCell draws. A PTC program (`run_code`) dispatches the real tools as
-// its sub-calls, so a call draws by its own name wherever it sits in the tree.
-const DRAWN = new Set(['message_bot', 'stop_bot', 'create_bot', 'update_bot', 'group_relay', 'create_group', 'update_group', 'delete_group', 'post_to_group', 'ask_user', 'request_secret', 'ask_user_question', 'read_group_chat', 'remember', 'forget'])
+// The calls ToolCell draws as its own event lines. A PTC program (`run_code`)
+// dispatches the real tools as its sub-calls, so a call draws by its own name wherever
+// it sits in the tree; every other call draws as an ordinary tool row (tool-rows.js).
+const DRAWN = new Set(['message_bot', 'edit_queued_message', 'stop_bot', 'create_bot', 'update_bot', 'group_relay', 'create_group', 'update_group', 'delete_group', 'post_to_group', 'ask_user', 'request_secret', 'ask_user_question', 'read_group_chat', 'remember', 'forget'])
 // Calls whose card a dock above the composer carries when the call is not drawn.
 const CARDS = new Set(['ask_user', 'request_secret'])
 
@@ -673,6 +692,16 @@ function renderCall(call, { sessionId, roster, actions, useUi, useWork, findBot 
       const target = findBot(arg('to')) ?? { name: arg('to') ?? '…', color: 'gray' }
       if (done && call.isError) return h('div', { className: 'bt-event' }, t("Couldn't message {name}", { name: target.name }))
       return h(EventLine, { prefix: t('Messaged'), bots: [target], onOpen: bot => bot.id && actions.openExchange(self?.id ?? sessionId, bot.id), whole: true })
+    }
+    case 'edit_queued_message': {
+      const target = findBot(arg('to')) ?? { name: arg('to') ?? '…', color: 'gray' }
+      if (!done) return null
+      if (call.isError) return h('div', { className: 'bt-event' }, t("Couldn't change the queued message for {name}", { name: target.name }))
+      // A refusal explains itself in the result; only a real change draws a line.
+      const result = contentText(call.content)
+      if (!/^(Replaced|Canceled) /.test(result)) return null
+      const prefix = result.startsWith('Canceled') ? t('Canceled a queued message for') : t('Updated a queued message for')
+      return h(EventLine, { prefix, bots: [target], onOpen: bot => bot.id && actions.openExchange(self?.id ?? sessionId, bot.id), whole: true })
     }
     case 'stop_bot': {
       const target = findBot(arg('bot')) ?? { name: arg('bot') ?? '…', color: 'gray' }
@@ -739,7 +768,7 @@ function renderCall(call, { sessionId, roster, actions, useUi, useWork, findBot 
   }
 }
 
-export function ToolCell({ node, sessionId, useRoster, useUi, useWork, actions }) {
+export function ToolCell({ node, sessionId, useRoster, useUi, useWork, actions, cwd, openFile, inspectCall }) {
   const roster = useRoster(value => value)
   const root = node.data.root
   const turn = node.location?.turn?.turn ?? root.turn
@@ -753,7 +782,27 @@ export function ToolCell({ node, sessionId, useRoster, useUi, useWork, actions }
   // A running tool shows only as the activity row's phrase.
   useLiveNote(actions, sessionId, `tool:${root.callId ?? node.key}`, note)
   useShownCards(actions, sessionId, drawn.filter(call => CARDS.has(toolName(call)) && call.callId).map(call => call.callId))
-  if (drawn.length === 0) return null
-  const env = { sessionId, roster, actions, useUi, useWork, findBot }
-  return h(Fragment, null, drawn.map((call, index) => h(Fragment, { key: call.callId ?? index }, renderCall(call, env))))
+  if (hidden) return null
+  // A group Session keeps only the team's own lines: the relay round is the group's
+  // transcript. A Bot's own chat shows every call it makes, as DSH's own chat does.
+  const teamOnly = Boolean(roster.roomsById[sessionId])
+  const env = { sessionId, roster, actions, useUi, useWork, findBot, cwd, openFile, inspectCall, seen: new Set() }
+  return renderBranch(root, env, teamOnly)
+}
+
+// One call and its sub-calls: a team tool keeps its event line, any other call draws
+// the DSH-like disclosure row that carries what nests inside it. A program root whose
+// call head left the loaded history has no name to draw; its sub-calls show alone.
+// Each call draws once, as in callTree: a loaded history can repeat one.
+function renderBranch(call, env, teamOnly, key) {
+  const id = call.callId ?? call
+  if (env.seen.has(id)) return null
+  env.seen.add(id)
+  const name = toolName(call)
+  if (DRAWN.has(name)) return renderCall(call, env)
+  const children = (call.subCalls ?? [])
+    .map((child, index) => renderBranch(child, env, teamOnly, child.callId ?? index))
+    .filter(child => child !== null && child !== undefined)
+  if (teamOnly || name === undefined || name === '') return children.length > 0 ? h(Fragment, { key }, children) : null
+  return h(BotToolRow, { key, call, cwd: env.cwd, openFile: env.openFile, inspectCall: env.inspectCall }, children.length > 0 ? children : null)
 }
